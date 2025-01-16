@@ -37,6 +37,11 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "gpt_handler",
+    "gemini_handler",
+    "claude_handler",
+    "mistral_handler",
+    "rest_framework",
 ]
 
 MIDDLEWARE = [
