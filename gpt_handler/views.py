@@ -4,9 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import os
 import json
-
-# Create your views here.
 from openai import OpenAI
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def create_response(message) :

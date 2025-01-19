@@ -7,10 +7,9 @@ import os
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types import content
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def create_response(message):
-# Create the model
     generation_config = {
     "temperature": 1,
     "top_p": 0.95,
@@ -62,7 +61,7 @@ def create_response(message):
     ]
     )
     response = chat_session.send_message(message)
-    print(response.text)
+    return response.text
 # Create your views here.
 
 class GenerateChat(APIView):
