@@ -32,7 +32,7 @@ DEBUG = os.getenv("DEBUG") == "True"
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:8000", os.getenv("DJANGO_ALLOWED_HOSTS")
+    "http://localhost:8000"
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True
