@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import os
 import json
+from gpt_handler.models import HistoryPrompt
 from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -109,6 +110,13 @@ class GenerateChat(APIView):
                 response_data = json.loads(response)
             else:
                 response_data = response
+                
+            history_prompt = HistoryPrompt.objects.create(
+                prompt=message,
+                response=response_data.get('response'),
+                model_name="ChatGPT"
+            )
+            history_prompt.save()
 
             return Response({
                 "status": 200,
@@ -121,6 +129,23 @@ class GenerateChat(APIView):
                 "message": f"Internal Server Error: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
-
+class GetHistoryPrompt(APIView):
+    def get(self, request):
+        history_prompts = HistoryPrompt.objects.all().order_by('-created_at')
+        data = []
+        
+        for history_prompt in history_prompts:
+            data.append({
+                "prompt": history_prompt.prompt,
+                "response": history_prompt.response,
+                "model_name": history_prompt.model_name,
+                "created_at": history_prompt.created_at
+            })
+        
+        return Response({
+            "status": 200,
+            "message": "Success",
+            "data": data
+        }, status=status.HTTP_200_OK)
         
     
