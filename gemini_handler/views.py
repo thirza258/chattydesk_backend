@@ -6,6 +6,7 @@ import json
 import os
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types import content
+from gpt_handler.models import HistoryPrompt
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -79,6 +80,13 @@ class GenerateChat(APIView):
             
             try:
                 response = json.loads(response)
+                
+                history_prompt = HistoryPrompt(
+                    prompt=message,
+                    response=response["response"],
+                    model_name="gemini"
+                )
+                history_prompt.save()
             except Exception as e:
                 return Response({
                     "status": 500,

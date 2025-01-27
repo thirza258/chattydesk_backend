@@ -5,7 +5,7 @@ import json
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-
+from gpt_handler.models import HistoryPrompt
 
 client = anthropic.Anthropic(
     # defaults to os.environ.get("ANTHROPIC_API_KEY")
@@ -57,6 +57,13 @@ class GenerateChat(APIView):
         
         try:
             response = create_response(message)
+            
+            history_prompt = HistoryPrompt(
+                prompt=message,
+                response=response,
+                model_name="claude"
+            )
+            history_prompt.save()
             
             return Response({
                 "status": 200,
