@@ -86,7 +86,8 @@ class GenerateChat(APIView):
             
             history_prompt = HistoryPrompt(
                 prompt=message,
-                response=response
+                response=response,
+                model_name="Mistral"
             )
             history_prompt.save()
             

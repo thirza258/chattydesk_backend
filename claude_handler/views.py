@@ -61,7 +61,7 @@ class GenerateChat(APIView):
             history_prompt = HistoryPrompt(
                 prompt=message,
                 response=response,
-                model_name="claude"
+                model_name="Claude"
             )
             history_prompt.save()
             
