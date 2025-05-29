@@ -6,6 +6,7 @@ import os
 import json
 from gpt_handler.models import HistoryPrompt
 from openai import OpenAI
+import uuid
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -88,14 +89,14 @@ def create_response(message) :
     
     return response.choices[0].message.content
     
-import json
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
+
 
 class GenerateChat(APIView):
     def post(self, request):
         message = request.data.get('message')
+        conversation_id = request.data.get('conversation_id', None)
+        if(conversation_id is None):
+            conversation_id = str(uuid.uuid4())
         
         if not message:
             return Response({
@@ -113,6 +114,7 @@ class GenerateChat(APIView):
                 
             history_prompt = HistoryPrompt.objects.create(
                 prompt=message,
+                conversation_id=conversation_id,
                 response=response_data.get('response'),
                 model_name="ChatGPT"
             )

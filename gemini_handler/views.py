@@ -7,6 +7,7 @@ import os
 import google.generativeai as genai
 from google.ai.generativelanguage_v1beta.types import content
 from gpt_handler.models import HistoryPrompt
+import uuid
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
@@ -68,6 +69,9 @@ def create_response(message):
 class GenerateChat(APIView):
     def post(self, request):
         message = request.data.get('message')
+        conversation_id = request.data.get('conversation_id', None)
+        if conversation_id is None:
+            conversation_id = str(uuid.uuid4())
         
         if not message:
             return Response({
@@ -83,6 +87,7 @@ class GenerateChat(APIView):
                 
                 history_prompt = HistoryPrompt(
                     prompt=message,
+                    conversation_id=conversation_id,
                     response=response["response"],
                     model_name="gemini"
                 )

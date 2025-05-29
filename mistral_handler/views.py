@@ -6,6 +6,7 @@ from rest_framework import status
 import os
 import json
 from gpt_handler.models import HistoryPrompt
+import uuid
 
 # Create your views here.
 mistral = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
@@ -73,6 +74,9 @@ def create_response(message):
 class GenerateChat(APIView):
     def post(self, request):
         message = request.data.get('message')
+        conversation_id = request.data.get('conversation_id', None)
+        if conversation_id is None:
+            conversation_id = str(uuid.uuid4())
         
         if not message:
             return Response({
@@ -83,9 +87,9 @@ class GenerateChat(APIView):
         try:
             response = create_response(message)
 
-            
             history_prompt = HistoryPrompt(
                 prompt=message,
+                
                 response=response,
                 model_name="Mistral"
             )

@@ -4,6 +4,7 @@ from django.db import models
 class HistoryPrompt(models.Model):
     prompt = models.TextField()
     response = models.TextField()
+    conversation_id = models.CharField(max_length=100, blank=True, null=True)
     model_name = models.CharField(max_length=100)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
