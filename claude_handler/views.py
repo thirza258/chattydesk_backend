@@ -73,7 +73,7 @@ class GenerateChat(APIView):
             return Response({
                 "status": 200,
                 "message": "Success",
-                "data": response  # This now includes the response as requested
+                "data": response  
             }, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({
