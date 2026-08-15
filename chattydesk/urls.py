@@ -17,12 +17,14 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+from openrouter_handler.legacy import legacy_urlpatterns
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", include([
-        path("gpt_handler/", include("gpt_handler.urls")),
-        path("gemini_handler/", include("gemini_handler.urls")),
-        path("mistral_handler/", include("mistral_handler.urls")),
-        path("claude_handler/", include("claude_handler.urls")),
+        path("openrouter/", include("openrouter_handler.urls")),
+        # Deprecated: kept so the existing frontend keeps working during the
+        # switch to /api/v1/openrouter/. See FRONTEND_HANDOVER.md.
+        *legacy_urlpatterns(),
     ])),
 ]

@@ -1,2 +1,2 @@
-migrate: python manage.py migrate
-web: gunicorn 'chattydesk.wsgi'
+release: ./deploy.sh --no-serve --skip-install
+web: ./deploy.sh --skip-install
