@@ -22,6 +22,7 @@ from openrouter_handler.legacy import legacy_urlpatterns
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", include([
+        path("auth/", include("accounts.urls")),
         path("openrouter/", include("openrouter_handler.urls")),
         # Deprecated: kept so the existing frontend keeps working during the
         # switch to /api/v1/openrouter/. See FRONTEND_HANDOVER.md.

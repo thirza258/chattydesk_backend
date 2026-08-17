@@ -9,14 +9,55 @@ API contract for the frontend: **[FRONTEND_HANDOVER.md](./FRONTEND_HANDOVER.md)*
 
 ## Endpoints
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET`  | `/api/v1/openrouter/models/`  | Model catalogue for the picker (cached 1h) |
-| `POST` | `/api/v1/openrouter/chat/`    | Send a prompt to any model |
-| `GET`  | `/api/v1/openrouter/history/` | Stored prompts/answers, paginated |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/register/` | – | Create an account, get a token pair |
+| `POST` | `/api/v1/auth/login/`    | – | Username + password, get a token pair |
+| `POST` | `/api/v1/auth/refresh/`  | – | Exchange a refresh token for a new access token |
+| `GET`  | `/api/v1/auth/me/`       | ✓ | The signed-in account |
+| `GET`/`PATCH` | `/api/v1/auth/settings/` | ✓ | Preferences, including the user's own OpenRouter key |
+| `GET`  | `/api/v1/openrouter/models/`  | – | Model catalogue for the picker (cached 1h) |
+| `POST` | `/api/v1/openrouter/chat/`    | ✓ | Send a prompt to any model |
+| `GET`  | `/api/v1/openrouter/history/` | ✓ | The caller's prompts/answers, paginated |
 
 `/api/v1/{gpt,gemini,claude,mistral}_handler/` still respond, each pinned to one model,
-so the existing frontend keeps working. They're deprecated.
+so the existing frontend keeps working. They're deprecated — and they now need a token
+too, being the same chat view with a preset model.
+
+## Accounts and JWT
+
+Authentication is [Simple JWT](https://django-rest-framework-simplejwt.readthedocs.io)
+over `django.contrib.auth.User` — no custom user model, so `createsuperuser` and the
+admin work as they always did. Clients send `Authorization: Bearer <access token>`;
+`IsAuthenticated` is the project-wide default and the public endpoints (register, login,
+refresh, the model catalogue) opt out explicitly.
+
+Access tokens last an hour and refresh tokens a week (`JWT_ACCESS_MINUTES`,
+`JWT_REFRESH_DAYS`). There is no token blacklist: signing out is the client dropping its
+tokens. Sign-in, sign-up and refresh are throttled per IP (`AUTH_THROTTLE_RATE`,
+20/min by default).
+
+Chat history is scoped to the caller — `HistoryPrompt.user`, added in
+`openrouter_handler.0003`. The column is nullable because rows written before accounts
+existed cannot be attributed to anyone; they stay on disk and are no longer served.
+
+## Bring-your-own OpenRouter key
+
+`accounts.UserSettings` lets a user save their own key, so their chats survive the
+server's key running out of credit. `PATCH /api/v1/auth/settings/` verifies a new key
+against OpenRouter's `/key` endpoint before storing it, and only ever returns the last
+four characters afterwards.
+
+The key is encrypted at rest with Fernet (`accounts/crypto.py`), using a key derived
+from `SECRET_KEY` unless `SETTINGS_ENCRYPTION_KEY` is set. That protects a leaked
+database dump, not a leaked environment. Rotating either secret makes saved keys
+undecryptable — the API then reports "no key saved" and chats fall back to the server's
+key, so nothing breaks beyond users re-entering theirs.
+
+By default the server's key is tried first and the user's is the fallback (on `401`,
+`402`, `403` or `429`); `prefer_own_key` flips the order. A `400` is never retried with
+the other key — a bad model id fails the same way twice. The chat response reports which
+key paid via `used_own_key`.
 
 ## Local setup
 
@@ -58,6 +99,10 @@ boot.
 
 Required in production: `SECRET_KEY`, `OPENROUTER_API_KEY`, `DATABASE_URL`
 (or `DEVELOPMENT_MODE=True` for sqlite), `DJANGO_ALLOWED_HOSTS`.
+
+`SECRET_KEY` now signs JWTs and (by default) encrypts saved OpenRouter keys, so changing
+it signs everyone out and invalidates those keys. Set `JWT_SIGNING_KEY` and
+`SETTINGS_ENCRYPTION_KEY` if you want to rotate the three independently.
 
 ## Chat history migration
 
@@ -101,7 +146,10 @@ All responses use the same envelope you already handle:
 }
 ```
 
-No authentication is required by the API itself — the OpenRouter key lives on the server.
+Chat, history and settings require `Authorization: Bearer <access token>` from
+`/api/v1/auth/login/` — see [Accounts and JWT](#accounts-and-jwt) above. The model
+catalogue stays public. No OpenRouter key is ever needed from the client; the server's
+key pays unless the user saved one of their own.
 
 ---
 

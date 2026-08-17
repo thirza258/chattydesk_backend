@@ -1,7 +1,17 @@
+from django.conf import settings
 from django.db import models
 
 
 class HistoryPrompt(models.Model):
+    # Nullable because rows written before accounts existed have no owner. They
+    # stay on disk but belong to nobody, so no signed-in user is served them.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="prompts",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+    )
     prompt = models.TextField()
     response = models.TextField()
     conversation_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)

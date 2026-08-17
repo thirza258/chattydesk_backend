@@ -1,0 +1,31 @@
+"""Give every stored prompt an owner.
+
+Nullable on purpose: existing rows predate accounts and cannot be attributed to
+one. They keep their data and stop being served — the history endpoint only
+returns rows belonging to the caller.
+"""
+
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+        ("openrouter_handler", "0002_copy_legacy_history"),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name="historyprompt",
+            name="user",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="prompts",
+                to=settings.AUTH_USER_MODEL,
+            ),
+        ),
+    ]

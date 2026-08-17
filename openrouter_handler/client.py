@@ -44,10 +44,12 @@ def get_api_key():
     return api_key
 
 
-def _headers(with_auth=True):
+def _headers(with_auth=True, api_key=None):
     headers = {"Content-Type": "application/json"}
     if with_auth:
-        headers["Authorization"] = f"Bearer {get_api_key()}"
+        # `api_key` is a caller's own key (see accounts.models.UserSettings);
+        # without one the server's key pays for the request.
+        headers["Authorization"] = f"Bearer {api_key or get_api_key()}"
 
     # Optional attribution headers, used by openrouter.ai/rankings.
     referer = os.getenv("OPENROUTER_SITE_URL")
@@ -59,13 +61,13 @@ def _headers(with_auth=True):
     return headers
 
 
-def _request(method, path, with_auth=True, **kwargs):
+def _request(method, path, with_auth=True, api_key=None, **kwargs):
     url = f"{BASE_URL}{path}"
     try:
         response = requests.request(
             method,
             url,
-            headers=_headers(with_auth=with_auth),
+            headers=_headers(with_auth=with_auth, api_key=api_key),
             timeout=REQUEST_TIMEOUT,
             **kwargs,
         )
@@ -99,7 +101,9 @@ def _request(method, path, with_auth=True, **kwargs):
 # Chat completions
 # --------------------------------------------------------------------------- #
 
-def chat_completion(messages, model=None, temperature=None, max_tokens=None, extra=None):
+def chat_completion(
+    messages, model=None, temperature=None, max_tokens=None, extra=None, api_key=None
+):
     """Call /chat/completions and return the raw OpenRouter payload."""
     body = {
         "model": model or DEFAULT_MODEL,
@@ -112,12 +116,23 @@ def chat_completion(messages, model=None, temperature=None, max_tokens=None, ext
     if extra:
         body.update(extra)
 
-    payload = _request("POST", "/chat/completions", json=body)
+    payload = _request("POST", "/chat/completions", json=body, api_key=api_key)
 
     choices = payload.get("choices") or []
     if not choices:
         raise OpenRouterError("OpenRouter returned no choices.", status_code=502, payload=payload)
     return payload
+
+
+def key_info(api_key):
+    """Ask OpenRouter about a key: label, spend so far, and any credit limit.
+
+    The cheapest way to tell a working key from a typo or a revoked one, and it
+    costs no inference. Raises OpenRouterError with status 401 when the key is
+    not accepted.
+    """
+    payload = _request("GET", "/key", api_key=api_key)
+    return payload.get("data") or {}
 
 
 def extract_text(payload):

@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import sys
@@ -25,6 +26,10 @@ load_dotenv()
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("SECRET_KEY")
+
+# Encrypts the OpenRouter keys users save on their account (accounts.crypto).
+# Falls back to SECRET_KEY, so nothing extra has to be deployed.
+SETTINGS_ENCRYPTION_KEY = os.getenv("SETTINGS_ENCRYPTION_KEY", "")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG") == "True"
@@ -53,10 +58,48 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "accounts",
     "openrouter_handler",
     "rest_framework",
     "corsheaders",
 ]
+
+# ---------------------------------------------------------------------------
+# API authentication
+#
+# Bearer tokens only, and authenticated by default: chat and history are per
+# account. The public endpoints (sign-up, sign-in, refresh, the model
+# catalogue) opt out with permission_classes = [AllowAny].
+# ---------------------------------------------------------------------------
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    # So a 401 or a 429 arrives in the same {status, message} shape as the rest.
+    "EXCEPTION_HANDLER": "chattydesk.envelope.exception_handler",
+    # Applied to the sign-in/sign-up endpoints only (accounts.views.AuthThrottle).
+    # Set AUTH_THROTTLE_RATE empty to turn it off.
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": os.getenv("AUTH_THROTTLE_RATE", "20/min") or None,
+    },
+}
+
+SIMPLE_JWT = {
+    # Short-lived access token, long-lived refresh: a leaked access token
+    # expires on its own, and the password is asked for once a week.
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=int(os.getenv("JWT_ACCESS_MINUTES", "60"))
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_DAYS", "7"))),
+    # Rotation is off because there is no blacklist table to invalidate the old
+    # token against — a client that loses the response to a refresh would be
+    # locked out of a token that is still perfectly valid.
+    "ROTATE_REFRESH_TOKENS": False,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    # Defaults to SECRET_KEY when unset, which is what the deploy does.
+    "SIGNING_KEY": os.getenv("JWT_SIGNING_KEY") or SECRET_KEY,
+}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

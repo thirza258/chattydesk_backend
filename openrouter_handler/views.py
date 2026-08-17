@@ -2,27 +2,79 @@ import os
 import uuid
 
 from rest_framework import status
-from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
+from accounts.models import settings_for
+from chattydesk.envelope import envelope as _envelope, error as _error
 from openrouter_handler import client
 from openrouter_handler.models import HistoryPrompt
 
 # How many previous turns of a conversation are replayed back to the model.
 HISTORY_TURNS = int(os.getenv("OPENROUTER_HISTORY_TURNS", "10"))
 
-
-def _envelope(data, message="Success", code=status.HTTP_200_OK):
-    return Response(
-        {"status": code, "message": message, "data": data}, status=code
-    )
-
-
-def _error(message, code):
-    return Response({"status": code, "message": message}, status=code)
+# Statuses that mean "this key cannot pay for this request" — revoked, out of
+# credit, rate limited — as opposed to a bad request no key would fix. Note that
+# OpenRouter's 403 is a moderation refusal, not a key problem.
+KEY_FAILURE_STATUSES = {401, 402, 429}
 
 
-def _build_messages(prompt, conversation_id, system_prompt, use_history=True):
+def _upstream_status(exc):
+    """The status to report for an OpenRouter failure.
+
+    A 401 from OpenRouter means the *OpenRouter* key was rejected. Passing that
+    through would tell the client its own session had expired, and send it off to
+    refresh a token that was never the problem — so it becomes a 502: the
+    upstream we depend on would not serve us.
+    """
+    if exc.status_code == 401:
+        return status.HTTP_502_BAD_GATEWAY
+    if 400 <= exc.status_code < 600:
+        return exc.status_code
+    return status.HTTP_502_BAD_GATEWAY
+
+
+def _api_keys_to_try(user):
+    """The keys to attempt, in order, as (owner, key) pairs.
+
+    The server's key goes first so a user's own credit is only spent once ours
+    has run out. `prefer_own_key` puts theirs in front instead.
+    """
+    server_key = os.getenv("OPENROUTER_API_KEY") or None
+    own_settings = settings_for(user)
+    own_key = own_settings.openrouter_api_key() if own_settings else None
+
+    order = [("user", own_key), ("server", server_key)]
+    if not (own_settings and own_settings.prefer_own_key):
+        order.reverse()
+
+    return [(owner, key) for owner, key in order if key]
+
+
+def _complete(messages, keys, **kwargs):
+    """Run the completion, moving on to the next key when one cannot pay.
+
+    Returns (payload, owner) so the caller can tell whose key was spent.
+    """
+    if not keys:
+        raise client.OpenRouterError(
+            "No OpenRouter key available. Add your own key in Settings.",
+            status_code=500,
+        )
+
+    last_error = None
+    for owner, key in keys:
+        try:
+            return client.chat_completion(messages, api_key=key, **kwargs), owner
+        except client.OpenRouterError as exc:
+            if exc.status_code not in KEY_FAILURE_STATUSES:
+                raise  # The request itself is wrong; another key changes nothing.
+            last_error = exc
+
+    raise last_error
+
+
+def _build_messages(prompt, conversation_id, system_prompt, use_history=True, user=None):
     """Compose the OpenAI-style message list sent to OpenRouter."""
     messages = []
     if system_prompt:
@@ -30,9 +82,10 @@ def _build_messages(prompt, conversation_id, system_prompt, use_history=True):
 
     if use_history and conversation_id:
         # Oldest first — replaying newest-first would hand the model the
-        # conversation backwards.
+        # conversation backwards. Scoped to the caller as well as the id: a
+        # guessed conversation_id must not replay somebody else's thread.
         previous = (
-            HistoryPrompt.objects.filter(conversation_id=conversation_id)
+            HistoryPrompt.objects.filter(conversation_id=conversation_id, user=user)
             .order_by("-created_at")[:HISTORY_TURNS]
         )
         for turn in reversed(list(previous)):
@@ -73,6 +126,9 @@ def _as_int(value, field):
 class GenerateChat(APIView):
     """POST a prompt, get an answer back from any model OpenRouter proxies.
 
+    Requires a bearer token (the REST_FRAMEWORK default): inference costs money,
+    and the answer is filed under the caller's account.
+
     `default_model` is supplied by the URLconf so the legacy per-provider paths
     (/api/v1/gpt_handler/ and friends) keep working with a sensible model.
     """
@@ -101,19 +157,23 @@ class GenerateChat(APIView):
         messages = request.data.get("messages")
         if not messages:
             messages = _build_messages(
-                message, conversation_id, system_prompt, use_history=use_history
+                message,
+                conversation_id,
+                system_prompt,
+                use_history=use_history,
+                user=request.user,
             )
 
         try:
-            payload = client.chat_completion(
+            payload, key_owner = _complete(
                 messages,
+                _api_keys_to_try(request.user),
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
         except client.OpenRouterError as exc:
-            code = exc.status_code if 400 <= exc.status_code < 600 else 502
-            return _error(f"OpenRouter error: {exc.message}", code)
+            return _error(f"OpenRouter error: {exc.message}", _upstream_status(exc))
         except Exception as exc:  # noqa: BLE001 - surface anything unexpected as 500
             return _error(
                 f"Internal Server Error: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -123,6 +183,7 @@ class GenerateChat(APIView):
         used_model = payload.get("model") or model
 
         HistoryPrompt.objects.create(
+            user=request.user,
             prompt=message,
             response=answer,
             conversation_id=conversation_id,
@@ -135,12 +196,21 @@ class GenerateChat(APIView):
                 "model": used_model,
                 "conversation_id": conversation_id,
                 "usage": payload.get("usage") or {},
+                # So the UI can say when a reply was paid for with the caller's
+                # own key rather than the server's.
+                "used_own_key": key_owner == "user",
             }
         )
 
 
 class ListModels(APIView):
-    """GET the OpenRouter catalogue so the UI can render a model picker."""
+    """GET the OpenRouter catalogue so the UI can render a model picker.
+
+    Public: it is a price list, it holds nothing about anybody, and the landing
+    page should be able to quote from it without an account.
+    """
+
+    permission_classes = [AllowAny]
 
     def get(self, request):
         search = (request.query_params.get("search") or "").strip().lower()
@@ -151,8 +221,7 @@ class ListModels(APIView):
         try:
             models = client.list_models(force_refresh=refresh)
         except client.OpenRouterError as exc:
-            code = exc.status_code if 400 <= exc.status_code < 600 else 502
-            return _error(f"OpenRouter error: {exc.message}", code)
+            return _error(f"OpenRouter error: {exc.message}", _upstream_status(exc))
 
         if text_only:
             models = [m for m in models if client.is_text_model(m)]
@@ -179,7 +248,7 @@ class ListModels(APIView):
 
 
 class GetHistoryPrompt(APIView):
-    """GET stored prompts/answers, newest first.
+    """GET the caller's stored prompts/answers, newest first.
 
     The legacy path (/api/v1/gpt_handler/history/) sets `legacy_shape` so it keeps
     returning a bare list in `data`, which is what the current frontend reads.
@@ -188,7 +257,8 @@ class GetHistoryPrompt(APIView):
     legacy_shape = False
 
     def get(self, request):
-        queryset = HistoryPrompt.objects.all()
+        # Never `.all()`: history is the record of one person's conversations.
+        queryset = HistoryPrompt.objects.filter(user=request.user)
 
         conversation_id = request.query_params.get("conversation_id")
         if conversation_id:
