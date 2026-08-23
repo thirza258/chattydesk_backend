@@ -1,5 +1,7 @@
 import os
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -296,3 +298,91 @@ class GetHistoryPrompt(APIView):
             return _envelope(data)
 
         return _envelope({"count": total, "limit": limit, "offset": offset, "results": data})
+
+
+class CompareModels(APIView):
+    """POST one prompt to 2–5 models at once; answers come back side by side.
+
+    Requires a bearer token (the REST_FRAMEWORK default) for the same reason
+    as GenerateChat: inference costs money. Unlike chat, nothing is written
+    to history — a compare is ephemeral by design.
+    """
+
+    def post(self, request, *args, **kwargs):
+        message = request.data.get("message")
+        if not message or not str(message).strip():
+            return _error(
+                "Bad Request: 'message' field is required.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        models = request.data.get("models")
+        if not isinstance(models, list) or not all(
+            isinstance(m, str) and m.strip() for m in models
+        ):
+            return _error(
+                "Bad Request: 'models' must be a list of 2-5 model ids.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        models = [m.strip() for m in models]
+        if not 2 <= len(models) <= 5:
+            return _error(
+                "Bad Request: 'models' must contain between 2 and 5 ids.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        system_prompt = request.data.get("system_prompt", client.DEFAULT_SYSTEM_PROMPT)
+        try:
+            temperature = _as_float(request.data.get("temperature"), "temperature")
+            max_tokens = _as_int(request.data.get("max_tokens"), "max_tokens")
+        except ValueError as exc:
+            return _error(f"Bad Request: {exc}", status.HTTP_400_BAD_REQUEST)
+
+        messages = _build_messages(message, None, system_prompt, use_history=False)
+        keys = _api_keys_to_try(request.user)
+
+        def run_one(model):
+            """One slot: its own completion, key fallback, error, and clock."""
+            started = time.perf_counter()
+            try:
+                payload, key_owner = _complete(
+                    messages, keys, model=model, temperature=temperature, max_tokens=max_tokens
+                )
+            except client.OpenRouterError as exc:
+                # status_code is bookkeeping for the all-failed case; popped below.
+                return {
+                    "model": model,
+                    "error": f"OpenRouter error: {exc.message}",
+                    "status_code": exc.status_code,
+                    "duration_ms": round((time.perf_counter() - started) * 1000),
+                }
+            return {
+                "model": payload.get("model") or model,
+                "response": client.extract_text(payload),
+                "usage": payload.get("usage") or {},
+                "used_own_key": key_owner == "user",
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+                "error": None,
+            }
+
+        # Sync gunicorn workers: this request must finish inside
+        # GUNICORN_TIMEOUT (180s). In parallel it is bounded by the slowest
+        # model (~120s upstream timeout); in sequence it would be the sum.
+        with ThreadPoolExecutor(max_workers=len(models)) as pool:
+            results = list(pool.map(run_one, models))  # map preserves slot order
+
+        failures = [r for r in results if r["error"]]
+        if len(failures) == len(results):
+            first = failures[0]
+            return _error(
+                first["error"],
+                _upstream_status(
+                    client.OpenRouterError(first["error"], first["status_code"])
+                ),
+            )
+
+        for result in results:
+            result.pop("status_code", None)  # internal only; not part of the wire shape
+
+        return _envelope({"prompt": message, "results": results})
+
