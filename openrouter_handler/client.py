@@ -81,19 +81,35 @@ def _request(method, path, with_auth=True, api_key=None, **kwargs):
     except ValueError:
         payload = None
 
-    if response.status_code >= 400:
-        detail = None
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            detail = error.get("message") if isinstance(error, dict) else error
+    error = payload.get("error") if isinstance(payload, dict) else None
+    # Generation errors can arrive inside HTTP 200 responses after OpenRouter
+    # has committed its headers. Preserve their code for key fallback and UI.
+    if response.status_code >= 400 or error is not None:
+        detail = error.get("message") if isinstance(error, dict) else error
+        error_status = response.status_code
+        if error_status < 400:
+            try:
+                error_status = (
+                    int(error.get("code")) if isinstance(error, dict) else 502
+                )
+            except (TypeError, ValueError):
+                error_status = 502
+            if not 400 <= error_status < 600:
+                error_status = 502
+        if not isinstance(detail, str) or not detail:
+            detail = f"OpenRouter returned HTTP {error_status}"
         raise OpenRouterError(
-            detail or f"OpenRouter returned HTTP {response.status_code}",
-            status_code=response.status_code,
+            detail,
+            status_code=error_status,
             payload=payload,
         )
 
     if payload is None:
         raise OpenRouterError("OpenRouter returned a non-JSON response.", status_code=502)
+    if not isinstance(payload, dict):
+        raise OpenRouterError(
+            "OpenRouter returned an invalid JSON response.", status_code=502
+        )
     return payload
 
 
@@ -118,9 +134,8 @@ def chat_completion(
 
     payload = _request("POST", "/chat/completions", json=body, api_key=api_key)
 
-    choices = payload.get("choices") or []
-    if not choices:
-        raise OpenRouterError("OpenRouter returned no choices.", status_code=502, payload=payload)
+    # Do not persist an empty answer or count it as a successful compare slot.
+    extract_text(payload)
     return payload
 
 
@@ -137,15 +152,44 @@ def key_info(api_key):
 
 def extract_text(payload):
     """Pull the assistant text out of an OpenRouter chat payload."""
-    message = (payload.get("choices") or [{}])[0].get("message") or {}
+    choices = payload.get("choices")
+    if (
+        not isinstance(choices, list)
+        or not choices
+        or not isinstance(choices[0], dict)
+    ):
+        raise OpenRouterError("OpenRouter returned no valid choices.", payload=payload)
+
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise OpenRouterError(
+            "OpenRouter returned an invalid assistant message.", payload=payload
+        )
     content = message.get("content")
 
     # Some models answer with the OpenAI "content parts" array instead of a string.
     if isinstance(content, list):
         content = "".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
         )
-    return (content or "").strip()
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        return refusal.strip()
+
+    if choice.get("finish_reason") == "length":
+        detail = (
+            "The model reached its token limit before returning text. "
+            "Increase max_tokens or choose another model."
+        )
+    else:
+        detail = "The model returned no text. Try again or choose another model."
+    raise OpenRouterError(detail, payload=payload)
 
 
 # --------------------------------------------------------------------------- #

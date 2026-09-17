@@ -19,6 +19,36 @@ API contract for the frontend: **[FRONTEND_HANDOVER.md](./FRONTEND_HANDOVER.md)*
 | `GET`  | `/api/v1/openrouter/models/`  | – | Model catalogue for the picker (cached 1h) |
 | `POST` | `/api/v1/openrouter/chat/`    | ✓ | Send a prompt to any model |
 | `GET`  | `/api/v1/openrouter/history/` | ✓ | The caller's prompts/answers, paginated |
+| `GET`/`PATCH` | `/api/v1/openrouter/conversations/<id>/memory/` | ✓ | Recall settings and memory reset for an owned thread |
+
+## Managing conversation memory
+
+Apply migration `openrouter_handler.0004_conversationmemory` with
+`python manage.py migrate`. Memory preferences belong to an account and a
+conversation; legacy threads acquire settings when first changed or used.
+
+`GET /api/v1/openrouter/conversations/<id>/memory/` returns:
+
+```json
+{"status":200,"message":"Success","data":{"enabled":true,"history_turns":10,"available_turns":3,"reset_at":null}}
+```
+
+Patch `enabled` or `history_turns` (1–50) to change recall. Patch `{"reset":true}`
+to exclude all turns before the reset from future prompts without deleting chat
+history. Disabled memory sends only the system instruction and current message;
+messages still appear in history and can be recalled if memory is re-enabled.
+
+Chat requests accept `history_turns` alongside `use_history`. First-turn choices
+become the new thread's defaults; existing-thread overrides apply to that request,
+while the memory endpoint persists changes. Chat replies include `memory` with
+the settings, `used_turns`, and `trimmed` to explain the context actually used.
+Explicit `messages` arrays still control their own context and return `memory: null`.
+
+`OPENROUTER_HISTORY_CHARACTERS` defaults to 32,000. Complete recent turns are
+included only while they fit this character budget after the system instruction
+and current prompt. This is a bound on stored context, not an exact model token
+count; the current prompt is never truncated. No summaries are generated and no
+additional model calls are made to manage memory.
 
 `/api/v1/{gpt,gemini,claude,mistral}_handler/` still respond, each pinned to one model,
 so the existing frontend keeps working. They're deprecated — and they now need a token

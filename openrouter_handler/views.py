@@ -3,14 +3,21 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
 from accounts.models import settings_for
-from chattydesk.envelope import envelope as _envelope, error as _error
+from chattydesk.envelope import envelope as _envelope, error as _error, first_error
 from openrouter_handler import client
-from openrouter_handler.models import HistoryPrompt
+from openrouter_handler.memory import (
+    MemoryPatchSerializer,
+    build_messages,
+    memory_data,
+    memory_for,
+)
+from openrouter_handler.models import ConversationMemory, HistoryPrompt
 
 # How many previous turns of a conversation are replayed back to the model.
 HISTORY_TURNS = int(os.getenv("OPENROUTER_HISTORY_TURNS", "10"))
@@ -139,7 +146,7 @@ class GenerateChat(APIView):
 
     def post(self, request, *args, **kwargs):
         message = request.data.get("message")
-        if not message or not str(message).strip():
+        if not isinstance(message, str) or not message.strip():
             return _error(
                 "Bad Request: 'message' field is required.",
                 status.HTTP_400_BAD_REQUEST,
@@ -148,7 +155,15 @@ class GenerateChat(APIView):
         model = request.data.get("model") or self.default_model or client.DEFAULT_MODEL
         conversation_id = request.data.get("conversation_id") or str(uuid.uuid4())
         system_prompt = request.data.get("system_prompt", client.DEFAULT_SYSTEM_PROMPT)
-        use_history = _as_bool(request.data.get("use_history"))
+        memory = memory_for(request.user, conversation_id)
+        options = MemoryPatchSerializer(data={
+            **({"enabled": request.data["use_history"]} if "use_history" in request.data else {}),
+            **({"history_turns": request.data["history_turns"]} if "history_turns" in request.data else {}),
+        })
+        if not options.is_valid():
+            return _error(f"Bad Request: {first_error(options.errors)}", status.HTTP_400_BAD_REQUEST)
+        memory.enabled = options.validated_data.get("enabled", memory.enabled)
+        memory.history_turns = options.validated_data.get("history_turns", memory.history_turns)
 
         try:
             temperature = _as_float(request.data.get("temperature"), "temperature")
@@ -157,14 +172,9 @@ class GenerateChat(APIView):
             return _error(f"Bad Request: {exc}", status.HTTP_400_BAD_REQUEST)
 
         messages = request.data.get("messages")
+        memory_usage = None
         if not messages:
-            messages = _build_messages(
-                message,
-                conversation_id,
-                system_prompt,
-                use_history=use_history,
-                user=request.user,
-            )
+            messages, memory_usage = build_messages(message, system_prompt, memory)
 
         try:
             payload, key_owner = _complete(
@@ -192,6 +202,14 @@ class GenerateChat(APIView):
             model_name=used_model[:100],
         )
 
+        # First-turn preferences survive reloads and switching devices. Existing
+        # threads are updated explicitly through the memory endpoint instead.
+        ConversationMemory.objects.get_or_create(
+            user=request.user,
+            conversation_id=conversation_id,
+            defaults={"enabled": memory.enabled, "history_turns": memory.history_turns},
+        )
+
         return _envelope(
             {
                 "response": answer,
@@ -201,8 +219,42 @@ class GenerateChat(APIView):
                 # So the UI can say when a reply was paid for with the caller's
                 # own key rather than the server's.
                 "used_own_key": key_owner == "user",
+                "memory": {**memory_data(memory), **memory_usage} if memory_usage is not None else None,
             }
         )
+
+
+class ManageConversationMemory(APIView):
+    """Preferences and a non-destructive context reset for one owned thread."""
+
+    def _memory(self, user, conversation_id):
+        if not HistoryPrompt.objects.filter(user=user, conversation_id=conversation_id).exists():
+            return None
+        return memory_for(user, conversation_id)
+
+    def get(self, request, conversation_id):
+        memory = self._memory(request.user, conversation_id)
+        if memory is None:
+            return _error("Conversation not found.", status.HTTP_404_NOT_FOUND)
+        return _envelope(memory_data(memory))
+
+    def patch(self, request, conversation_id):
+        memory = self._memory(request.user, conversation_id)
+        if memory is None:
+            return _error("Conversation not found.", status.HTTP_404_NOT_FOUND)
+        serializer = MemoryPatchSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _error(f"Bad Request: {first_error(serializer.errors)}", status.HTTP_400_BAD_REQUEST)
+        updates = dict(serializer.validated_data)
+        if updates.pop("reset"):
+            updates["reset_at"] = timezone.now()
+        memory, _ = ConversationMemory.objects.update_or_create(
+            user=request.user, conversation_id=conversation_id,
+            defaults=updates, create_defaults={
+                "enabled": memory.enabled, "history_turns": memory.history_turns, **updates,
+            },
+        )
+        return _envelope(memory_data(memory))
 
 
 class ListModels(APIView):
@@ -310,7 +362,7 @@ class CompareModels(APIView):
 
     def post(self, request, *args, **kwargs):
         message = request.data.get("message")
-        if not message or not str(message).strip():
+        if not isinstance(message, str) or not message.strip():
             return _error(
                 "Bad Request: 'message' field is required.",
                 status.HTTP_400_BAD_REQUEST,
@@ -385,4 +437,3 @@ class CompareModels(APIView):
             result.pop("status_code", None)  # internal only; not part of the wire shape
 
         return _envelope({"prompt": message, "results": results})
-
