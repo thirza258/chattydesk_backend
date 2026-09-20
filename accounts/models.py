@@ -1,3 +1,4 @@
+import os
 from django.conf import settings
 from django.db import models
 
@@ -5,11 +6,12 @@ from accounts import crypto
 
 
 class UserSettings(models.Model):
-    """Per-account preferences — one row per user, created on first read.
+    """Per-account preferences and subscription status — one row per user, created on first read.
 
-    The only setting so far is a personal OpenRouter key: the server's key pays
-    for chats by default, and a user who would rather not depend on it (or who
-    hit the day the server's credit ran out) can supply their own.
+    Tracks:
+    - Personal OpenRouter key and preference.
+    - Quota of free requests made to paid models using the server's API key.
+    - Paddle lifetime unlimited status ($0.99 unlock).
     """
 
     user = models.OneToOneField(
@@ -26,6 +28,17 @@ class UserSettings(models.Model):
     # False: try the server's key first and fall back to this one when it is out
     # of credit. True: spend this key on every request.
     prefer_own_key = models.BooleanField(default=False)
+
+    # Subscription / Payment fields
+    # Count of requests sent to paid models using the server API key
+    paid_requests_count = models.PositiveIntegerField(default=0)
+    # True if user purchased unlimited access via Paddle ($0.99)
+    is_unlimited = models.BooleanField(default=False)
+    # Paddle identifiers
+    paddle_customer_id = models.CharField(max_length=255, blank=True, default="")
+    paddle_transaction_id = models.CharField(max_length=255, blank=True, default="")
+    unlocked_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -33,7 +46,23 @@ class UserSettings(models.Model):
         verbose_name_plural = "user settings"
 
     def __str__(self):
-        return f"settings for {self.user}"
+        return f"settings for {self.user} (unlimited={self.is_unlimited}, paid_reqs={self.paid_requests_count})"
+
+    @property
+    def max_free_requests(self):
+        return int(os.getenv("MAX_FREE_PAID_REQUESTS", "50"))
+
+    @property
+    def remaining_paid_requests(self):
+        if self.is_unlimited:
+            return None
+        return max(0, self.max_free_requests - self.paid_requests_count)
+
+    @property
+    def can_use_paid_model(self):
+        if self.is_unlimited:
+            return True
+        return self.paid_requests_count < self.max_free_requests
 
     @property
     def has_own_key(self):
@@ -58,6 +87,25 @@ class UserSettings(models.Model):
         failing, and the settings page shows no key saved.
         """
         return crypto.decrypt(self.openrouter_key)
+
+
+class PaymentTransaction(models.Model):
+    """Log of verified Paddle payment transactions."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="payments",
+        on_delete=models.CASCADE,
+    )
+    paddle_transaction_id = models.CharField(max_length=255, unique=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.99)
+    currency = models.CharField(max_length=10, default="USD")
+    status = models.CharField(max_length=50, default="completed")
+    raw_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Payment {self.paddle_transaction_id} for {self.user} ({self.status})"
 
 
 def settings_for(user):

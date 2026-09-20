@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "accounts",
     "openrouter_handler",
+    "payments",
     "rest_framework",
     "corsheaders",
 ]
@@ -203,3 +204,14 @@ STORAGES = {
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ---------------------------------------------------------------------------
+# Paddle Payment & Free Tier Quotas
+# ---------------------------------------------------------------------------
+PADDLE_ENVIRONMENT = os.getenv("PADDLE_ENVIRONMENT", "sandbox")
+PADDLE_API_KEY = os.getenv("PADDLE_API_KEY", "")
+PADDLE_CLIENT_TOKEN = os.getenv("PADDLE_CLIENT_TOKEN", "")
+PADDLE_PRICE_ID = os.getenv("PADDLE_PRICE_ID", "")
+PADDLE_WEBHOOK_SECRET = os.getenv("PADDLE_WEBHOOK_SECRET", "")
+PADDLE_VENDOR_ID = os.getenv("PADDLE_VENDOR_ID", "")
+MAX_FREE_PAID_REQUESTS = int(os.getenv("MAX_FREE_PAID_REQUESTS", "50"))

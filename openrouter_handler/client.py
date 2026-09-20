@@ -238,6 +238,29 @@ def is_free_model(model):
     return _price(model, "prompt") == 0 and _price(model, "completion") == 0
 
 
+def is_model_free(model_id):
+    """Check if a given model id is free.
+
+    OpenRouter free models typically end in ':free' (e.g. 'google/gemini-2.0-flash-exp:free',
+    'meta-llama/llama-3.3-70b-instruct:free') or have 0 pricing in the catalogue.
+    """
+    if not model_id:
+        return False
+    clean_id = str(model_id).strip()
+    if clean_id.endswith(":free"):
+        return True
+
+    try:
+        cached_models = cache.get(MODELS_CACHE_KEY)
+        if cached_models:
+            for m in cached_models:
+                if m.get("id") == clean_id:
+                    return is_free_model(m)
+    except Exception:
+        pass
+    return False
+
+
 def serialize_model(model):
     """Trim a catalogue entry down to what a model picker actually renders."""
     architecture = model.get("architecture") or {}

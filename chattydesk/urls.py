@@ -24,6 +24,7 @@ urlpatterns = [
     path("api/v1/", include([
         path("auth/", include("accounts.urls")),
         path("openrouter/", include("openrouter_handler.urls")),
+        path("payments/", include("payments.urls")),
         # Deprecated: kept so the existing frontend keeps working during the
         # switch to /api/v1/openrouter/. See FRONTEND_HANDOVER.md.
         *legacy_urlpatterns(),

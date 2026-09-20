@@ -3,12 +3,13 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+from django.db.models import F
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
-from accounts.models import settings_for
+from accounts.models import UserSettings, settings_for
 from chattydesk.envelope import envelope as _envelope, error as _error, first_error
 from openrouter_handler import client
 from openrouter_handler.memory import (
@@ -176,10 +177,25 @@ class GenerateChat(APIView):
         if not messages:
             messages, memory_usage = build_messages(message, system_prompt, memory)
 
+        is_free = client.is_model_free(model)
+        own_settings = settings_for(request.user)
+        own_key = own_settings.openrouter_api_key() if own_settings else None
+        keys = _api_keys_to_try(request.user)
+
+        if not is_free and own_settings and not own_settings.is_unlimited:
+            if not own_settings.can_use_paid_model:
+                if own_key:
+                    keys = [("user", own_key)]
+                else:
+                    return _error(
+                        f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or add your own OpenRouter key in Settings.",
+                        status.HTTP_402_PAYMENT_REQUIRED,
+                    )
+
         try:
             payload, key_owner = _complete(
                 messages,
-                _api_keys_to_try(request.user),
+                keys,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -190,6 +206,12 @@ class GenerateChat(APIView):
             return _error(
                 f"Internal Server Error: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+        if key_owner == "server" and not is_free and own_settings and not own_settings.is_unlimited:
+            UserSettings.objects.filter(id=own_settings.id).update(
+                paid_requests_count=F("paid_requests_count") + 1
+            )
+            own_settings.refresh_from_db()
 
         answer = client.extract_text(payload)
         used_model = payload.get("model") or model
@@ -220,6 +242,13 @@ class GenerateChat(APIView):
                 # own key rather than the server's.
                 "used_own_key": key_owner == "user",
                 "memory": {**memory_data(memory), **memory_usage} if memory_usage is not None else None,
+                "quota": {
+                    "is_unlimited": own_settings.is_unlimited if own_settings else False,
+                    "paid_requests_count": own_settings.paid_requests_count if own_settings else 0,
+                    "max_free_requests": own_settings.max_free_requests if own_settings else 50,
+                    "remaining_paid_requests": own_settings.remaining_paid_requests if own_settings else None,
+                    "model_is_free": is_free,
+                } if own_settings else None,
             }
         )
 
@@ -392,6 +421,19 @@ class CompareModels(APIView):
 
         messages = _build_messages(message, None, system_prompt, use_history=False)
         keys = _api_keys_to_try(request.user)
+        own_settings = settings_for(request.user)
+        own_key = own_settings.openrouter_api_key() if own_settings else None
+
+        paid_models = [m for m in models if not client.is_model_free(m)]
+        if paid_models and own_settings and not own_settings.is_unlimited:
+            if not own_settings.can_use_paid_model:
+                if own_key:
+                    keys = [("user", own_key)]
+                else:
+                    return _error(
+                        f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or add your own OpenRouter key in Settings.",
+                        status.HTTP_402_PAYMENT_REQUIRED,
+                    )
 
         def run_one(model):
             """One slot: its own completion, key fallback, error, and clock."""
@@ -433,7 +475,31 @@ class CompareModels(APIView):
                 ),
             )
 
+        server_paid_count = sum(
+            1
+            for r in results
+            if not r["error"]
+            and not r.get("used_own_key")
+            and not client.is_model_free(r.get("model"))
+        )
+        if server_paid_count > 0 and own_settings and not own_settings.is_unlimited:
+            UserSettings.objects.filter(id=own_settings.id).update(
+                paid_requests_count=F("paid_requests_count") + server_paid_count
+            )
+            own_settings.refresh_from_db()
+
         for result in results:
             result.pop("status_code", None)  # internal only; not part of the wire shape
 
-        return _envelope({"prompt": message, "results": results})
+        return _envelope(
+            {
+                "prompt": message,
+                "results": results,
+                "quota": {
+                    "is_unlimited": own_settings.is_unlimited if own_settings else False,
+                    "paid_requests_count": own_settings.paid_requests_count if own_settings else 0,
+                    "max_free_requests": own_settings.max_free_requests if own_settings else 50,
+                    "remaining_paid_requests": own_settings.remaining_paid_requests if own_settings else None,
+                } if own_settings else None,
+            }
+        )

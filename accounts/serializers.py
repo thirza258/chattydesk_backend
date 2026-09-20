@@ -7,15 +7,22 @@ There is no custom user model: accounts are `django.contrib.auth.User` rows, so
 from django.contrib.auth import get_user_model, password_validation
 from rest_framework import serializers
 
+from accounts.models import settings_for
+
 User = get_user_model()
 
 
 def serialize_user(user):
+    st = settings_for(user)
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "date_joined": user.date_joined,
+        "is_unlimited": st.is_unlimited if st else False,
+        "paid_requests_count": st.paid_requests_count if st else 0,
+        "max_free_requests": st.max_free_requests if st else 50,
+        "remaining_paid_requests": st.remaining_paid_requests if st else 50,
     }
 
 
@@ -25,10 +32,18 @@ def serialize_settings(row):
     The OpenRouter key is write-only: what comes back is whether one is saved
     and its last four characters, never the key.
     """
+    if not row:
+        return {}
     return {
         "has_own_key": row.has_own_key,
         "key_hint": row.openrouter_key_hint,
         "prefer_own_key": row.prefer_own_key,
+        "is_unlimited": row.is_unlimited,
+        "paid_requests_count": row.paid_requests_count,
+        "max_free_requests": row.max_free_requests,
+        "remaining_paid_requests": row.remaining_paid_requests,
+        "unlocked_at": row.unlocked_at,
+        "paddle_transaction_id": row.paddle_transaction_id,
         "updated_at": row.updated_at,
     }
 
