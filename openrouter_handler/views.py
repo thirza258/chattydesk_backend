@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import uuid
@@ -19,6 +20,8 @@ from openrouter_handler.memory import (
     memory_for,
 )
 from openrouter_handler.models import ConversationMemory, HistoryPrompt
+
+logger = logging.getLogger(__name__)
 
 # How many previous turns of a conversation are replayed back to the model.
 HISTORY_TURNS = int(os.getenv("OPENROUTER_HISTORY_TURNS", "10"))
@@ -61,7 +64,7 @@ def _api_keys_to_try(user):
     return [(owner, key) for owner, key in order if key]
 
 
-def _complete(messages, keys, **kwargs):
+def _complete(messages, keys, allow_fallback=True, **kwargs):
     """Run the completion, moving on to the next key when one cannot pay.
 
     Returns (payload, owner) so the caller can tell whose key was spent.
@@ -80,6 +83,24 @@ def _complete(messages, keys, **kwargs):
             if exc.status_code not in KEY_FAILURE_STATUSES:
                 raise  # The request itself is wrong; another key changes nothing.
             last_error = exc
+
+    if allow_fallback and last_error and client.is_credit_exhausted_error(last_error):
+        logger.warning(
+            "OpenRouter credits exhausted across available keys (%s), falling back to shuffled free models",
+            last_error,
+        )
+        for free_model in client.get_shuffled_free_models():
+            fb_kwargs = dict(kwargs)
+            fb_kwargs["model"] = free_model
+            for owner, key in keys:
+                try:
+                    logger.info("Retrying with free fallback model %s using %s key", free_model, owner)
+                    return client.chat_completion(messages, api_key=key, **fb_kwargs), owner
+                except client.OpenRouterError as fb_exc:
+                    if client.is_credit_exhausted_error(fb_exc):
+                        continue
+                    logger.warning("Free model %s with %s key failed: %s", free_model, owner, fb_exc)
+                    continue
 
     raise last_error
 
@@ -207,14 +228,15 @@ class GenerateChat(APIView):
                 f"Internal Server Error: {exc}", status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        if key_owner == "server" and not is_free and own_settings and not own_settings.is_unlimited:
+        answer = client.extract_text(payload)
+        used_model = payload.get("model") or model
+        actual_is_free = is_free or client.is_model_free(used_model)
+
+        if key_owner == "server" and not actual_is_free and own_settings and not own_settings.is_unlimited:
             UserSettings.objects.filter(id=own_settings.id).update(
                 paid_requests_count=F("paid_requests_count") + 1
             )
             own_settings.refresh_from_db()
-
-        answer = client.extract_text(payload)
-        used_model = payload.get("model") or model
 
         HistoryPrompt.objects.create(
             user=request.user,
@@ -440,7 +462,12 @@ class CompareModels(APIView):
             started = time.perf_counter()
             try:
                 payload, key_owner = _complete(
-                    messages, keys, model=model, temperature=temperature, max_tokens=max_tokens
+                    messages,
+                    keys,
+                    allow_fallback=False,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                 )
             except client.OpenRouterError as exc:
                 # status_code is bookkeeping for the all-failed case; popped below.

@@ -7,10 +7,69 @@ That is why this project no longer ships one vendor SDK per provider.
 Docs: https://openrouter.ai/docs
 """
 
+import logging
 import os
+import random
 
 import requests
 from django.core.cache import cache
+
+logger = logging.getLogger(__name__)
+
+FREE_OPENROUTER_MODELS = [
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "cohere/north-mini-code:free",
+    "recursive/flint-v1.0:free",
+    "xingchen-agi/xing4.0-29b-a4b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-31b-it:free",
+]
+
+
+def get_shuffled_free_models():
+    models = list(FREE_OPENROUTER_MODELS)
+    random.shuffle(models)
+    return models
+
+
+def is_credit_exhausted_error(exc_or_status, message=""):
+    code = None
+    if isinstance(exc_or_status, int):
+        code = exc_or_status
+    else:
+        for attr in ("status_code", "http_status", "code"):
+            val = getattr(exc_or_status, attr, None)
+            if isinstance(val, int):
+                code = val
+                break
+        if code is None and hasattr(exc_or_status, "payload") and isinstance(exc_or_status.payload, dict):
+            err = exc_or_status.payload.get("error")
+            if isinstance(err, dict):
+                code = err.get("code")
+
+    msg_str = f"{exc_or_status} {message}".lower()
+    if code == 402:
+        return True
+
+    if "rate limit" in msg_str and not any(k in msg_str for k in ("credit", "payment", "balance")):
+        return False
+
+    credit_keywords = (
+        "402",
+        "credit",
+        "payment required",
+        "run out of credits",
+        "insufficient balance",
+        "insufficient credits",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "out of credit",
+    )
+    return any(kw in msg_str for kw in credit_keywords)
 
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 

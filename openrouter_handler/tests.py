@@ -263,3 +263,50 @@ class CompareModelsTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         # Sequential would take >= 0.6s; parallel should comfortably finish under 0.55s
         self.assertLess(elapsed, 0.55)
+
+
+class FreeModelFallbackTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="fallbackuser", email="fallback@example.com", password="password123"
+        )
+        self.url = "/api/v1/openrouter/chat/"
+
+    def test_is_credit_exhausted_error(self):
+        """Verify credit error detection."""
+        self.assertTrue(client.is_credit_exhausted_error(client.OpenRouterError("Payment required", status_code=402)))
+        self.assertTrue(client.is_credit_exhausted_error(client.OpenRouterError("User has run out of credits", status_code=400)))
+        self.assertTrue(client.is_credit_exhausted_error(client.OpenRouterError("insufficient balance", status_code=403)))
+        self.assertFalse(client.is_credit_exhausted_error(client.OpenRouterError("Rate limit exceeded", status_code=429)))
+        self.assertFalse(client.is_credit_exhausted_error(client.OpenRouterError("Model not found", status_code=404)))
+
+    @patch("openrouter_handler.views.client.chat_completion")
+    def test_generate_chat_fallback_on_credit_exhausted(self, mock_chat):
+        """When OpenRouter returns 402, chat falls back to a free model."""
+        self.client.force_authenticate(user=self.user)
+
+        calls = []
+
+        def fake_completion(messages, api_key=None, model=None, **kwargs):
+            calls.append(model)
+            if model == "anthropic/claude-3.5-sonnet":
+                raise client.OpenRouterError("Payment Required: out of credits", status_code=402)
+            return _fake_payload(model, content=f"Free fallback reply from {model}")
+
+        mock_chat.side_effect = fake_completion
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-server-key"}):
+            response = self.client.post(
+                self.url,
+                {"message": "Hello world", "model": "anthropic/claude-3.5-sonnet"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0], "anthropic/claude-3.5-sonnet")
+        fallback_model = response.json()["data"]["model"]
+        self.assertTrue(fallback_model.endswith(":free"))
+        self.assertEqual(response.json()["data"]["response"], f"Free fallback reply from {fallback_model}")
+
