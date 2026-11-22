@@ -3,7 +3,7 @@
 # ChattyDesk backend deploy script.
 #
 #   ./deploy.sh                 install deps, collect static, migrate, serve
-#   ./deploy.sh --no-serve      release steps only (Heroku/Railway release phase)
+#   ./deploy.sh --no-serve      release steps only (docker / CI release phase)
 #   ./deploy.sh --serve-only    skip the release steps and just boot gunicorn
 #   ./deploy.sh --skip-install  reuse the already-installed dependencies
 #

@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "accounts",
     "openrouter_handler",
     "payments",
+    "benchmarking",
     "rest_framework",
     "corsheaders",
 ]

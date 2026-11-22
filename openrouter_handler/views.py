@@ -424,15 +424,18 @@ class CompareModels(APIView):
             isinstance(m, str) and m.strip() for m in models
         ):
             return _error(
-                "Bad Request: 'models' must be a list of 2-5 model ids.",
+                "Bad Request: 'models' must be a list of 2-10 model ids.",
                 status.HTTP_400_BAD_REQUEST,
             )
         models = [m.strip() for m in models]
-        if not 2 <= len(models) <= 5:
+        if not 2 <= len(models) <= 10:
             return _error(
-                "Bad Request: 'models' must contain between 2 and 5 ids.",
+                "Bad Request: 'models' must contain between 2 and 10 ids.",
                 status.HTTP_400_BAD_REQUEST,
             )
+
+        mode = request.data.get("mode", "standard")
+        save_session = _as_bool(request.data.get("save_session"), default=False)
 
         system_prompt = request.data.get("system_prompt", client.DEFAULT_SYSTEM_PROMPT)
         try:
@@ -446,16 +449,30 @@ class CompareModels(APIView):
         own_settings = settings_for(request.user)
         own_key = own_settings.openrouter_api_key() if own_settings else None
 
+        # Check if user inserted an OpenRouter API key directly in this comparison request
+        custom_key = (
+            request.data.get("openrouter_key")
+            or request.data.get("openrouter_api_key")
+            or request.data.get("api_key")
+            or ""
+        ).strip()
+        if custom_key:
+            own_key = custom_key
+            keys = [("user", custom_key)]
+            if own_settings and not own_settings.openrouter_api_key():
+                own_settings.set_openrouter_key(custom_key)
+                own_settings.save(update_fields=["openrouter_key", "openrouter_key_hint"])
+
         paid_models = [m for m in models if not client.is_model_free(m)]
-        if paid_models and own_settings and not own_settings.is_unlimited:
-            if not own_settings.can_use_paid_model:
-                if own_key:
-                    keys = [("user", own_key)]
-                else:
-                    return _error(
-                        f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or add your own OpenRouter key in Settings.",
-                        status.HTTP_402_PAYMENT_REQUIRED,
-                    )
+        if paid_models:
+            if own_key:
+                # When user has or inserts their own key, compare paid models using their key
+                keys = [("user", own_key)]
+            elif own_settings and not own_settings.is_unlimited and not own_settings.can_use_paid_model:
+                return _error(
+                    f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or insert your own OpenRouter key.",
+                    status.HTTP_402_PAYMENT_REQUIRED,
+                )
 
         def run_one(model):
             """One slot: its own completion, key fallback, error, and clock."""
@@ -518,10 +535,44 @@ class CompareModels(APIView):
         for result in results:
             result.pop("status_code", None)  # internal only; not part of the wire shape
 
+        session_id = None
+        if save_session and request.user.is_authenticated:
+            try:
+                from benchmarking.models import ComparisonResultRecord, ComparisonSession
+                session = ComparisonSession.objects.create(
+                    user=request.user,
+                    prompt=message,
+                    models_json=models,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    mode=mode,
+                )
+                session_id = str(session.id)
+                records = [
+                    ComparisonResultRecord(
+                        session=session,
+                        model_identifier=r.get("model", ""),
+                        response=r.get("response", ""),
+                        duration_ms=r.get("duration_ms", 0),
+                        input_tokens=r.get("usage", {}).get("prompt_tokens"),
+                        output_tokens=r.get("usage", {}).get("completion_tokens"),
+                        total_tokens=r.get("usage", {}).get("total_tokens"),
+                        used_own_key=r.get("used_own_key", False),
+                        error=r.get("error"),
+                        slot_index=idx,
+                    )
+                    for idx, r in enumerate(results)
+                ]
+                ComparisonResultRecord.objects.bulk_create(records)
+            except Exception as exc:
+                logger.warning("Failed to persist comparison session: %s", exc)
+
         return _envelope(
             {
                 "prompt": message,
                 "results": results,
+                "session_id": session_id,
                 "quota": {
                     "is_unlimited": own_settings.is_unlimited if own_settings else False,
                     "paid_requests_count": own_settings.paid_requests_count if own_settings else 0,
