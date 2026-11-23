@@ -14,11 +14,14 @@ User = get_user_model()
 
 def serialize_user(user):
     st = settings_for(user)
+    has_own = st.has_own_key if st else False
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "date_joined": user.date_joined,
+        "has_own_key": has_own,
+        "plan": "byok" if has_own else "free",
         "is_unlimited": st.is_unlimited if st else False,
         "paid_requests_count": st.paid_requests_count if st else 0,
         "max_free_requests": st.max_free_requests if st else 50,
@@ -38,6 +41,7 @@ def serialize_settings(row):
         "has_own_key": row.has_own_key,
         "key_hint": row.openrouter_key_hint,
         "prefer_own_key": row.prefer_own_key,
+        "plan": "byok" if row.has_own_key else "free",
         "is_unlimited": row.is_unlimited,
         "paid_requests_count": row.paid_requests_count,
         "max_free_requests": row.max_free_requests,

@@ -209,7 +209,7 @@ class GenerateChat(APIView):
                     keys = [("user", own_key)]
                 else:
                     return _error(
-                        f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or add your own OpenRouter key in Settings.",
+                        f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Add your own OpenRouter key in Settings to switch to the BYOK plan.",
                         status.HTTP_402_PAYMENT_REQUIRED,
                     )
 
@@ -470,7 +470,7 @@ class CompareModels(APIView):
                 keys = [("user", own_key)]
             elif own_settings and not own_settings.is_unlimited and not own_settings.can_use_paid_model:
                 return _error(
-                    f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Upgrade to Unlimited for $0.99 with Paddle or insert your own OpenRouter key.",
+                    f"Free limit reached: You have used {own_settings.paid_requests_count}/{own_settings.max_free_requests} free requests for paid models. Add your own OpenRouter key in Settings to switch to the BYOK plan.",
                     status.HTTP_402_PAYMENT_REQUIRED,
                 )
 

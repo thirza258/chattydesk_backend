@@ -69,6 +69,11 @@ class UserSettings(models.Model):
         """True only when the stored key can still be decrypted and used."""
         return self.openrouter_api_key() is not None
 
+    @property
+    def plan(self):
+        """Account plan: BYOK if user has configured their own key, otherwise Free."""
+        return "byok" if self.has_own_key else "free"
+
     def set_openrouter_key(self, raw_key):
         """Store (or clear, when passed nothing) a key. Does not save."""
         raw_key = (raw_key or "").strip()
